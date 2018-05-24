@@ -16,6 +16,7 @@ import libvirt
 
 import virtinst
 from virtinst import cli
+from virtinst import guestbuilder
 from virtinst.cli import fail, print_stdout, print_stderr
 
 
@@ -24,26 +25,6 @@ from virtinst.cli import fail, print_stdout, print_stderr
 ##############################
 
 install_methods = "--location URL, --cdrom CD/ISO, --pxe, --import, --boot hd|cdrom|..."
-
-
-def install_specified(location, cdpath, pxe, import_install):
-    return bool(pxe or cdpath or location or import_install)
-
-
-def cdrom_specified(guest, disk=None):
-    disks = guest.devices.disk
-
-    for d in disks:
-        if d.device == virtinst.DeviceDisk.DEVICE_CDROM:
-            return True
-
-    # Probably haven't set up disks yet
-    if not disks and disk:
-        for opts in disk:
-            if opts.count("device=cdrom"):
-                return True
-
-    return False
 
 
 def supports_pxe(guest):
@@ -364,25 +345,6 @@ def get_guest(conn, options):
 # Install media setup/validation #
 ##################################
 
-def set_install_media(guest, location, cdpath, distro_variant):
-    try:
-        cdinstall = bool(not location and (cdpath or cdrom_specified(guest)))
-
-        if cdinstall or cdpath:
-            guest.installer.cdrom = True
-        if location or cdpath:
-            guest.installer.location = (location or cdpath)
-
-        if distro_variant not in ["auto", "none"]:
-            guest.os_variant = distro_variant
-
-        guest.installer.check_location(guest)
-
-        if distro_variant == "auto":
-            guest.os_variant = guest.installer.detect_distro(guest)
-    except ValueError as e:
-        fail(_("Error validating install location: %s") % str(e))
-
 
 def do_test_media_detection(conn, url):
     guest = conn.caps.lookup_virtinst_guest()
@@ -413,9 +375,9 @@ def validate_required_options(options, guest):
 
     if (not guest.os.is_container() and
         not options.xmlonly and
-        (not install_specified(options.location, options.cdrom,
+        (not guestbuilder.install_specified(options.location, options.cdrom,
                                options.pxe, options.import_install)) and
-        (not cdrom_specified(guest, options.disk))):
+        (not guestbuilder.cdrom_specified(guest, options.disk))):
         msg += "\n" + (
             _("An install method must be specified\n(%(methods)s)") %
             {"methods": install_methods})
@@ -426,45 +388,6 @@ def validate_required_options(options, guest):
 
 _cdrom_location_man_page = _("See the man page for examples of "
     "using --location with CDROM media")
-
-
-def check_option_collisions(options, guest):
-    if options.noreboot and options.transient:
-        fail(_("--noreboot and --transient can not be specified together"))
-
-    # Install collisions
-    if sum([bool(l) for l in [options.pxe, options.location,
-                      options.cdrom, options.import_install]]) > 1:
-        fail(_("Only one install method can be used (%(methods)s)") %
-             {"methods": install_methods})
-
-    if (guest.os.is_container() and
-        install_specified(options.location, options.cdrom,
-                          options.pxe, options.import_install)):
-        fail(_("Install methods (%s) cannot be specified for "
-               "container guests") % install_methods)
-
-    if guest.os.is_xenpv():
-        if options.pxe:
-            fail(_("Network PXE boot is not supported for paravirtualized "
-                   "guests"))
-        if options.cdrom or options.livecd:
-            fail(_("Paravirtualized guests cannot install off cdrom media."))
-
-    if (options.location and
-        guest.conn.is_remote() and not
-        guest.conn.support_remote_url_install()):
-        fail(_("Libvirt version does not support remote --location installs"))
-
-    cdrom_err = ""
-    if guest.installer.cdrom:
-        cdrom_err = " " + _cdrom_location_man_page
-    if not options.location and options.extra_args:
-        fail(_("--extra-args only work if specified with --location.") +
-             cdrom_err)
-    if not options.location and options.initrd_inject:
-        fail(_("--initrd-inject only works if specified with --location.") +
-             cdrom_err)
 
 
 def _show_nographics_warnings(options, guest):
@@ -525,111 +448,6 @@ def show_warnings(options, guest):
             "suffer. Specify an OS with --os-variant for optimal results."))
 
     _show_nographics_warnings(options, guest)
-
-
-##########################
-# Guest building helpers #
-##########################
-
-def build_installer(options, conn, virt_type):
-    # Build the Installer instance
-    if options.pxe:
-        instclass = virtinst.PXEInstaller
-    elif options.cdrom or options.location or options.livecd:
-        instclass = virtinst.DistroInstaller
-    elif virt_type == "exe":
-        instclass = virtinst.ContainerInstaller
-    elif options.import_install or options.boot:
-        if options.import_install and options.nodisks:
-            fail(_("A disk device must be specified with --import."))
-        options.import_install = True
-        instclass = virtinst.ImportInstaller
-    elif options.xmlonly:
-        instclass = virtinst.ImportInstaller
-    else:
-        instclass = virtinst.DistroInstaller
-
-    installer = instclass(conn)
-    if options.livecd:
-        installer.livecd = True
-
-    return installer
-
-
-def build_guest_instance(conn, options):
-    guest = get_guest(conn, options)
-
-    logging.debug("Received virt method '%s'", guest.type)
-    logging.debug("Hypervisor name is '%s'", guest.os.os_type)
-
-    guest.installer = build_installer(options, conn, guest.os.os_type)
-
-    convert_old_memory(options)
-    convert_old_sound(options)
-    convert_old_networks(options)
-    convert_old_graphics(ptions)
-    convert_old_disks(options)
-    convert_old_features(options)
-    convert_old_cpuset(options)
-    convert_old_init(options)
-    convert_old_os_options(options)
-
-    # non-xml install options
-    options.extra_args = options.extra_args or []
-    guest.installer.extraargs = options.extra_args
-    guest.installer.initrd_injections = options.initrd_inject
-    guest.autostart = options.autostart
-
-    if options.name:
-        guest.name = options.name
-    if options.uuid:
-        guest.uuid = options.uuid
-    if options.description:
-        guest.description = options.description
-
-    validate_required_options(options, guest)
-    cli.parse_option_strings(options, guest, None)
-
-    # Extra disk validation
-    for disk in guest.devices.disk:
-        cli.validate_disk(disk)
-
-    set_install_media(guest, options.location, options.cdrom,
-        options.distro_variant)
-
-    guest.add_default_devices()
-
-    # Default to UEFI for aarch64
-    if (guest.os.is_arm64() and
-        not guest.os.kernel and
-        not guest.os.loader and
-        guest.os.loader_ro is None and
-        guest.os.nvram is None):
-        try:
-            guest.set_uefi_default()
-        except Exception as e:
-            logging.debug("Error setting UEFI default for aarch64",
-                exc_info=True)
-            logging.warning("Couldn't configure UEFI: %s", e)
-            logging.warning("Your aarch64 VM may not boot successfully.")
-
-    # Check usability of SMM feature
-    if guest.features.smm:
-        if not guest.os.is_x86():
-            fail(_("SMM feature is valid only for x86 architecture."))
-
-        if guest.os.machine is None:
-            guest.os.machine = "q35"
-        elif not guest.os.is_q35():
-            fail(_("SMM feature is valid only for q35 machine type"))
-
-    # Various little validations about option collisions. Need to do
-    # this after setting guest.installer at least
-    check_option_collisions(options, guest)
-
-    show_warnings(options, guest)
-
-    return guest
 
 
 ###########################
@@ -936,6 +754,29 @@ def parse_args():
     return parser.parse_args()
 
 
+class VirtInstallBuilder(guestbuilder.Builder):
+
+    def postprocess_options(self, options):
+        convert_old_memory(options)
+        convert_old_sound(options)
+        convert_old_networks(options)
+        convert_old_graphics(options)
+        convert_old_disks(options)
+        convert_old_features(options)
+        convert_old_cpuset(options)
+        convert_old_init(options)
+        convert_old_os_options(options)
+        options.extra_args = options.extra_args or []
+
+    def validate(self, options, guest):
+        validate_required_options(options, guest)
+        cli.parse_option_strings(options, guest, None)
+
+        # Extra disk validation
+        for disk in guest.devices.disk:
+            cli.validate_disk(disk)
+
+
 ###################
 # main() handling #
 ###################
@@ -968,7 +809,11 @@ def main(conn=None):
         do_test_media_detection(conn, options.test_media_detection)
         return 0
 
-    guest = build_guest_instance(conn, options)
+    builder = VirtInstallBuilder(logging.getLogger(""), conn, options)
+    guest, _ = builder.build_instance()
+
+    show_warnings(options, guest)
+
     if options.xmlonly or options.dry:
         xml = xml_to_print(guest, options.xmlonly, options.dry)
         if xml:
@@ -977,6 +822,7 @@ def main(conn=None):
         start_install(guest, options)
 
     return 0
+
 
 if __name__ == "__main__":
     try:
