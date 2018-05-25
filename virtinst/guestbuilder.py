@@ -15,12 +15,26 @@ from . import (PXEInstaller, DistroInstaller, ContainerInstaller,
                ImportInstaller)
 
 
+class Error(Exception):
+    message = "Generic error"
+
+    def __init__(self, **kwargs):
+        self.context = kwargs
+
+    def __str__(self):
+        return "%s: %s" % (self.message, self.context)
+
+
+class WrongConfiguration(Exception):
+    message = "Conflicting or incomplete configuration"
+
+
 def _get_guest(log, conn, options, missing_features):
     # Set up all virt/hypervisor parameters
     if sum([bool(f) for f in [options.fullvirt,
                               options.paravirt,
                               options.container]]) > 1:
-        fail(_("Can't do more than one of --hvm, --paravirt, or --container"))
+        raise WrongConfiguration(_("Can't do more than one of --hvm, --paravirt, or --container"))
 
     req_hv_type = options.hv_type and options.hv_type.lower() or None
     if options.fullvirt:
@@ -48,7 +62,8 @@ def _get_guest(log, conn, options, missing_features):
             typ=req_hv_type,
             machine=options.machine)
     except Exception as e:
-        fail(e)
+        Error(os_type=req_virt_type, arch=arch, typ=req_hv_type,
+                machine=options.machine)
 
     if (not req_virt_type and
         not req_hv_type and
@@ -129,7 +144,7 @@ class Builder(object):
         elif self._options.import_install or self._options.boot:
             if self._options.import_install and self._options.nodisks:
                 # TODO: raise
-                fail(_("A disk device must be specified with --import."))
+                raise WrongConfiguration(_("A disk device must be specified with --import."))
             self._options.import_install = True
             instclass = ImportInstaller
         elif self._options.xmlonly:
@@ -190,16 +205,16 @@ def _check_uefi_aarch64(log, guest, missing_features):
 
 
 def _check_smm(guest):
-    # TODO: raise, not fail() directly
+    # TODO: raise, not raise WrongConfiguration() directly
     # Check usability of SMM feature
     if guest.features.smm:
         if not guest.os.is_x86():
-            fail(_("SMM feature is valid only for x86 architecture."))
+            raise WrongConfiguration(_("SMM feature is valid only for x86 architecture."))
 
         if guest.os.machine is None:
             guest.os.machine = "q35"
         elif not guest.os.is_q35():
-            fail(_("SMM feature is valid only for q35 machine type"))
+            raise WrongConfiguration(_("SMM feature is valid only for q35 machine type"))
 
 
 def _set_install_media(guest, location, cdpath, distro_variant):
@@ -220,41 +235,41 @@ def _set_install_media(guest, location, cdpath, distro_variant):
             guest.os_variant = guest.installer.detect_distro(guest)
     except ValueError as e:
         # TODO: raise not fail
-        fail(_("Error validating install location: %s") % str(e))
+        raise WrongConfiguration(_("Error validating install location: %s") % str(e))
 
 
 # TODO: raise not fail
 def _check_option_collisions(options, guest):
     if options.noreboot and options.transient:
-        fail(_("--noreboot and --transient can not be specified together"))
+        raise WrongConfiguration(_("--noreboot and --transient can not be specified together"))
 
     # Install collisions
     if sum([bool(l) for l in [options.pxe, options.location,
                       options.cdrom, options.import_install]]) > 1:
-        fail(_("Only one install method can be used (%(methods)s)") %
+        raise WrongConfiguration(_("Only one install method can be used (%(methods)s)") %
              {"methods": install_methods})
 
     if (guest.os.is_container() and
         install_specified(options.location, options.cdrom,
                           options.pxe, options.import_install)):
-        fail(_("Install methods (%s) cannot be specified for "
+        raise WrongConfiguration(_("Install methods (%s) cannot be specified for "
                "container guests") % install_methods)
 
     if guest.os.is_xenpv():
         if options.pxe:
-            fail(_("Network PXE boot is not supported for paravirtualized "
+            raise WrongConfiguration(_("Network PXE boot is not supported for paravirtualized "
                    "guests"))
         if options.cdrom or options.livecd:
-            fail(_("Paravirtualized guests cannot install off cdrom media."))
+            raise WrongConfiguration(_("Paravirtualized guests cannot install off cdrom media."))
 
     if (options.location and
         guest.conn.is_remote() and not
         guest.conn.support_remote_url_install()):
-        fail(_("Libvirt version does not support remote --location installs"))
+        raise WrongConfiguration(_("Libvirt version does not support remote --location installs"))
 
     if not options.location and options.extra_args:
-        fail(_("--extra-args only work if specified with --location."))
+        raise WrongConfiguration(
+            _("--extra-args only work if specified with --location."))
     if not options.location and options.initrd_inject:
-        fail(_("--initrd-inject only works if specified with --location."))
-             cdrom_err)
-
+        raise WrongConfiguration(
+            _("--initrd-inject only works if specified with --location."))

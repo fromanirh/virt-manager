@@ -810,7 +810,10 @@ def main(conn=None):
         return 0
 
     builder = VirtInstallBuilder(logging.getLogger(""), conn, options)
-    guest, _ = builder.build_instance()
+    try:
+        guest, _ = builder.build_instance()
+    except guestbuilder.Error as e:
+        fail(e)
 
     show_warnings(options, guest)
 
