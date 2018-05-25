@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+#
+# Copyright 2018 Red Hat, Inc.
+# Francesco Romani <fromani@redhat.com>
+#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
+
+import argparse
+import logging
+import os
+import sys
+
+import bottle
+
+from virtinst import cli
+from virtinst import guestbuilder
+
+
+_conn = None
+_log = logging.getLogger("virt-tuned")
+
+
+
+@bottle.route('/domains', method='POST')
+def build_domain():
+    options = options_from_request(_log, bottle.request)
+    builder = guestbuilder.Builder(_log, _conn, options)
+    try:
+        guest, missing_features = builder.build_instance()
+    except guestbuilder.Error as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+    else:
+        xml = guestbuilder.get_xml(guest)
+        return {
+            "success" : True,
+            "xml" : xml,
+            "missing_features": missing_features
+        }
+
+
+def main():
+    global _conn
+    _conn = cli.getConnection(None)
+    bottle.run(host='localhost', port=8080, debug=True)
+
+    
+def options_from_request(log, req):
+    options = argparse.Namespace(
+        accelerate=False,
+        arch=None,
+        autoconsole=True,
+        autostart=False,
+        blkiotune=None,
+        boot=None,
+        bridge=None,
+        cdrom=None,
+        cdrom_short=None,
+        channel=None,
+        check=None,
+        check_cpu=False,
+        clock=None,
+        connect=None,
+        console=None,
+        container=False,
+        controller=None,
+        cpu=None,
+        cpuset=None,
+        cputune=None,
+        debug=True,
+        description=None,
+        disk=['none'],
+        disksize=None,
+        distro_type=None,
+        distro_variant=None,
+        dry=False,
+        events=None,
+        extra_args=None,
+        features=None,
+        file_paths=None,
+        filesystem=None,
+        force=False,
+        fullvirt=False,
+        graphics=None,
+        hostdev=None,
+        hv_type='',
+        idmap=None,
+        import_install=False,
+        init=None,
+        initrd_inject=None,
+        input=None,
+        keymap=None,
+        livecd=False,
+        location=None,
+        mac=None,
+        machine=None,
+        memballoon=None,
+        memdev=None,
+        memory='1024',
+        memorybacking=None,
+        memtune=None,
+        metadata=None,
+        name='foo',
+        network=None,
+        noacpi=False,
+        noapic=False,
+        nodisks=False,
+        nographics=False,
+        nonetworks=False,
+        noreboot=False,
+        numatune=None,
+        oldmemory=None,
+        panic=None,
+        parallel=None,
+        paravirt=False,
+        pm=None,
+        prompt=False,
+        pxe=False,
+        qemu_commandline=None,
+        quiet='all',
+        redirdev=None,
+        resource=None,
+        rng=None,
+        sdl=False,
+        security=None,
+        serial=None,
+        smartcard=None,
+        sound=None,
+        sparse=True,
+        sysinfo=None,
+        test_media_detection=None,
+        tpm=None,
+        transient=False,
+        uuid=None,
+        vcpus=None,
+        video=None,
+        vnc=False,
+        vnclisten=None,
+        vncport=None,
+        wait=None,
+        watchdog=None,
+        xmlonly='all',
+        xmlstep=None
+    )
+    for key in dir(options):
+        if key.startswith('_'):
+            continue
+        value = req.params.get(key, default=None)
+        if value is None:
+            continue
+
+        log.info("request %s: %s -> %s", id(req), key, value)
+        setattr(options, key, value)
+    return options
+
+
+if __name__ == "__main__":
+    sys.exit(main())
