@@ -62,8 +62,8 @@ def _get_guest(log, conn, options, missing_features):
             typ=req_hv_type,
             machine=options.machine)
     except Exception as e:
-        Error(os_type=req_virt_type, arch=arch, typ=req_hv_type,
-                machine=options.machine)
+        raise Error(os_type=req_virt_type, arch=arch, typ=req_hv_type,
+                    machine=options.machine)
 
     if (not req_virt_type and
         not req_hv_type and
